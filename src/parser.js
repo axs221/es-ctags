@@ -14,7 +14,6 @@ const objectHash = require('object-hash')
 const clone = require('lodash.clonedeep')
 const uuid = require('uuid')
 
-
 class Parser {
   constructor(ctx) {
     this.ctx = ctx
@@ -27,6 +26,10 @@ class Parser {
 
   parse(callback) {
     const that = this
+
+    if (typeof that.condense === 'array') {
+      that.condense = that.condense[that.condense.length - 1]
+    }
 
     if (Object.keys(that.condense).length) {
       return that.hasCondense(callback)
@@ -43,7 +46,7 @@ class Parser {
 
     this.clean()
 
-    this.tags = this.tags.sort(function (a, b) {
+    this.tags = this.tags.sort(function(a, b) {
       return a.lineno - b.lineno
     })
 
@@ -55,16 +58,19 @@ class Parser {
       return
     }
 
-    const onSpan = function (span) {
+    const onSpan = function(span) {
       const tags = this.bySpan[span]
 
       if (tags.length < 2) {
         return
       }
 
-      this.tags = without(this.tags, sortBy(tags, function (tag) {
-        return (tag.namespace || '').split(/\./).length
-      }).pop())
+      this.tags = without(
+        this.tags,
+        sortBy(tags, function(tag) {
+          return (tag.namespace || '').split(/\./).length
+        }).pop(),
+      )
     }
 
     Object.keys(this.bySpan).forEach(onSpan, this)
@@ -75,11 +81,35 @@ class Parser {
       return null
     }
 
-    return Object.keys(tree).filter(function (key) {
-      return !(/^!/.test(key))
-    }).map(function (name) {
-      return this.onNode(name, tree[name], parent)
-    }, this)
+    const regularKeys = Object.keys(tree)
+      .filter(function(key) {
+        return !/^!/.test(key)
+      })
+      .map(function(name) {
+        return this.onNode(name, tree[name], parent)
+      }, this)
+
+    const define = tree['!define']
+
+    let exportedKeys = []
+    if (define) {
+      const modules = define['!modules']
+      if (modules) {
+        Object.keys(Object.values(modules)[0])
+          .filter(function(key) {
+            return !/^!/.test(key)
+          })
+          .map(function(name) {
+            return this.onNode(
+              name,
+              Object.values(define['!modules'])[0][name],
+              parent,
+            )
+          }, this)
+      }
+    }
+
+    return [...regularKeys, ...exportedKeys]
   }
 
   namespace(node, parent) {
@@ -141,27 +171,31 @@ class Parser {
       return ''
     }
 
-    return args.pop().split(',').map(function (arg) {
-      const t = arg.match(Parser.MATCHES.arg)
+    return args
+      .pop()
+      .split(',')
+      .map(function(arg) {
+        const t = arg.match(Parser.MATCHES.arg)
 
-      if (!Array.isArray(t) || !t.length) {
-        return null
-      }
+        if (!Array.isArray(t) || !t.length) {
+          return null
+        }
 
-      const type = t.pop()
+        const type = t.pop()
 
-      if (this.define[type] && this.define[type]['!type']) {
-        return this.typeFn(this.define[type]['!type'])
-      }
+        if (this.define[type] && this.define[type]['!type']) {
+          return this.typeFn(this.define[type]['!type'])
+        }
 
-      if (type && Parser.MATCHES.arrArg.test(type)) {
-        return 'Array'.concat(type)
-      }
+        if (type && Parser.MATCHES.arrArg.test(type)) {
+          return 'Array'.concat(type)
+        }
 
-      return type
-    }, this).filter(function (type) {
-      return !!type
-    })
+        return type
+      }, this)
+      .filter(function(type) {
+        return !!type
+      })
   }
 
   typeFn(node) {
@@ -227,12 +261,14 @@ class Parser {
   }
 
   push(tag) {
+    if (tag.name === 'default') {
+      tag.name = this.condense['!name'].replace(/.\w\w$/, '')
+      tag.addr = '/default/'
+    }
+
     this.tags.push(tag)
 
-    const hasSpan = (
-      tag.origin &&
-      tag.origin['!span']
-    )
+    const hasSpan = tag.origin && tag.origin['!span']
 
     if (!hasSpan) {
       return
@@ -299,7 +335,7 @@ class Parser {
       return true
     }
 
-    return Parser.DEFAULT_TYPES.some(function (dt) {
+    return Parser.DEFAULT_TYPES.some(function(dt) {
       if (isString(dt)) {
         return type === dt
       }
@@ -315,7 +351,6 @@ class Parser {
     _node.parent = undefined
     return objectHash(_node)
   }
-
 }
 
 Parser.MATCHES = {
@@ -349,8 +384,8 @@ Parser.TYPE_MAPPING = {
   RegExp: 'regexp',
 }
 
-module.exports = function (ctx, fn) {
-  return (new Parser(ctx)).parse(fn)
+module.exports = function(ctx, fn) {
+  return new Parser(ctx).parse(fn)
 }
 
 module.exports.ctags = require('./ctags')
